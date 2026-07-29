@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
   "name": "@jack-yang/opencode-bark-notify",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Focus-aware Bark push notifications for OpenCode — get detailed agent messages on your phone when you step away",
   "type": "module",
   "exports": {
