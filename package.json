@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "@jack-yang/opencode-bark-notify",
+  "version": "1.0.0",
+  "description": "Focus-aware Bark push notifications for OpenCode — get detailed agent messages on your phone when you step away",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./index.ts"
+    }
+  },
+  "engines": {
+    "opencode": ">=1.4.3"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.4.3"
+  },
+  "devDependencies": {
+    "vitest": "^3.2.4",
+    "typescript": "^5.9.2"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "files": [
+    "index.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "bark",
+    "notification",
+    "push-notification",
+    "ios",
+    "focus-aware"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yangwudong/opencode-bark-notify.git"
+  },
+  "homepage": "https://github.com/yangwudong/opencode-bark-notify#readme",
+  "bugs": {
+    "url": "https://github.com/yangwudong/opencode-bark-notify/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
