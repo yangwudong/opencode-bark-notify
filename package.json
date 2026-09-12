@@ -4,8 +4,12 @@
   "version": "1.0.2",
   "description": "Focus-aware Bark push notifications for OpenCode — get detailed agent messages on your phone when you step away",
   "type": "module",
+  "main": "./index.ts",
   "exports": {
     ".": {
+      "import": "./index.ts"
+    },
+    "./server": {
       "import": "./index.ts"
     }
   },
