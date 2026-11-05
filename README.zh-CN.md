@@ -1,12 +1,11 @@
 # opencode-bark-notify
 
-为 [OpenCode](https://opencode.ai) 提供基于 [Bark](https://github.com/Finb/Bark) 的手机推送通知，**智能感知终端焦点**。
+为 [OpenCode](https://opencode.ai) 提供基于 [Bark](https://github.com/Finb/Bark) 的手机推送通知。
 
-离开电脑时收到 **agent 的实际消息内容**，在终端前时自动静默——不打扰。
+任务完成、需要授权、等你回答时，iPhone 上收到 **agent 的实际消息内容**。
 
 ## 功能
 
-- **焦点感知** — 终端在前台时不发通知，切走或离开时才推
 - **详细内容** — 推送 agent 的最后一条消息，不只是"任务完成"
 - **分类标识** — iOS 副标题显示事件类型：✅ Responded / 🔐 Wait for Permission / ❓ Input Needed
 - **Session 感知** — 每条通知包含 session 标题
@@ -59,13 +58,12 @@ export BARK_KEY="你的BARK设备KEY"
 | `barkUrl` | string | `https://api.day.app` | Bark 服务器地址（自建服务器用） |
 | `level` | string | `timeSensitive` | iOS 通知级别 |
 | `group` | string | `opencode` | iOS 通知分组 |
-| `terminals` | string[] | `["Ghostty", "Terminal", "iTerm2", ...]` | 焦点检测的终端 App 名称 |
 
 ## 通知类型
 
 | 事件 | 标识 | 内容 |
 |------|------|------|
-| Session 完成 | **✅ Responded** | agent 最后一条消息（≤500字） |
+| Session 完成 | **✅ Responded** | agent 最后一条回复（≤500字） |
 | 需要权限 | **🔐 Wait for Permission** | 权限类型 + 匹配模式 |
 | 需要回答 | **❓ Input Needed** | 问题内容 |
 
@@ -73,10 +71,10 @@ export BARK_KEY="你的BARK设备KEY"
 
 本插件与 [@mohak34/opencode-notifier](https://github.com/mohak34/opencode-notifier)（桌面通知）互补：
 
-- **桌面通知**（声音/弹窗）→ 在电脑前但切到了其他窗口
-- **Bark 推送**（手机）→ 完全离开电脑
+- **桌面通知**（声音/弹窗）→ 电脑上
+- **Bark 推送**（手机）→ 手机上
 
-两者各自独立检测焦点，互不冲突。
+本插件总是推送；如果希望桌面通知只在终端不在前台时弹，在 opencode-notifier 里设置 `suppressWhenFocused`。
 
 ## 许可证
 
