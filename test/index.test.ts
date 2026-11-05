@@ -119,4 +119,13 @@ describe("opencode-bark-notify", () => {
     const fns = Object.entries(mod).filter(([, v]) => typeof v === "function")
     expect(fns.every(([, v]) => v === mod.default)).toBe(true)
   })
+
+  // opencode's npm loader takes the server entry from exports["./server"] or "main" only;
+  // with just exports["."] an npm install is skipped silently (fixed in #2).
+  it("declares the server entry the npm loader looks for", async () => {
+    const { readFileSync } = await import("node:fs")
+    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"))
+    expect(pkg.main).toBe("./index.ts")
+    expect(pkg.exports["./server"]).toEqual({ import: "./index.ts" })
+  })
 })
