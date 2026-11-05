@@ -20,8 +20,8 @@
     "@opencode-ai/plugin": ">=1.4.3"
   },
   "devDependencies": {
-    "vitest": "^3.2.4",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.2",
+    "vitest": "^5.1.0"
   },
   "scripts": {
     "test": "vitest run",
