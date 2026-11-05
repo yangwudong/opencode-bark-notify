@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
   "name": "@jack-yang/opencode-bark-notify",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Bark push notifications for OpenCode — get the agent's actual messages on your iPhone",
   "type": "module",
   "main": "./index.ts",
@@ -16,10 +16,8 @@
   "engines": {
     "opencode": ">=1.4.3"
   },
-  "peerDependencies": {
-    "@opencode-ai/plugin": ">=1.4.3"
-  },
   "devDependencies": {
+    "@opencode-ai/plugin": "^1.19.5",
     "typescript": "^5.9.2",
     "vitest": "^5.1.0"
   },

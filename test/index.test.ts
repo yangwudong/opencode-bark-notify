@@ -128,4 +128,14 @@ describe("opencode-bark-notify", () => {
     expect(pkg.main).toBe("./index.ts")
     expect(pkg.exports["./server"]).toEqual({ import: "./index.ts" })
   })
+
+  // @opencode-ai/plugin is only imported as a type. As a peer dependency npm installed it
+  // (and ~30 transitive packages) for every user; opencode checks engines.opencode instead.
+  it("installs no runtime dependencies", async () => {
+    const { readFileSync } = await import("node:fs")
+    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"))
+    expect(pkg.dependencies).toBeUndefined()
+    expect(pkg.peerDependencies).toBeUndefined()
+    expect(pkg.engines.opencode).toBeDefined()
+  })
 })
