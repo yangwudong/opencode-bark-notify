@@ -10,6 +10,7 @@ interface BarkConfig {
 
 const DEFAULT_BARK_URL = "https://api.day.app"
 const MAX_BODY_LENGTH = 500
+const REQUEST_TIMEOUT_MS = 5000
 const UNIT_SECONDS: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400 }
 
 // "30m" / "1h" / "24h" / "2d" / 45 (bare number = minutes) → seconds for Bark's `ttl`.
@@ -41,6 +42,8 @@ const sendBark = async (
       method: "POST",
       headers: { "Content-Type": "application/json; charset=utf-8" },
       body: JSON.stringify({ title, subtitle, body, group, level, ...(ttl ? { ttl } : {}) }),
+      // A hung Bark server must not stall opencode's event handling.
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     })
   } catch {}
 }
@@ -71,56 +74,78 @@ export const BarkNotifyPlugin: Plugin = async ({ project, client, directory }, c
 
   // project.id is "global" outside a git repository; the folder name says more.
   const folder = String(directory || (project as any)?.worktree || "").split("/").filter(Boolean).pop()
-  let currentTitle = `OpenCode · ${folder || "Session"}`
+  const fallbackTitle = `OpenCode · ${folder || "Session"}`
 
+  // State is per session: several sessions (or a session and its subagents) can run at once.
   // Only assistant text is worth sending; user prompts arrive as text parts too.
-  const assistantMessages = new Set<string>()
-  let lastMessage = ""
+  const sessions = new Map<string, { assistantMessages: Set<string>; lastMessage: string }>()
+  const state = (sid: string) => {
+    let s = sessions.get(sid)
+    if (!s) sessions.set(sid, (s = { assistantMessages: new Set(), lastMessage: "" }))
+    return s
+  }
 
-  const send = (subtitle: string, body: string) =>
-    sendBark(barkUrl, barkKey, currentTitle, subtitle, body, level, group, ttl)
+  const sessionInfo = async (sid: string | undefined): Promise<{ title?: string; parentID?: string }> => {
+    if (!sid) return {}
+    try {
+      const { data } = (await client.session.get({ path: { id: sid } })) as any
+      return data || {}
+    } catch {
+      return {}
+    }
+  }
+
+  const send = async (sid: string | undefined, subtitle: string, body: string, info?: { title?: string }) => {
+    const { title } = info || (await sessionInfo(sid))
+    await sendBark(barkUrl, barkKey, title ? `OpenCode · ${title}` : fallbackTitle, subtitle, body, level, group, ttl)
+  }
 
   return {
     event: async ({ event }: { event: any }) => {
       if (event.type === "message.updated") {
         const info = event.properties?.info
-        if (info?.role === "assistant" && info.id) assistantMessages.add(info.id)
+        if (info?.role === "assistant" && info.id && info.sessionID) state(info.sessionID).assistantMessages.add(info.id)
       }
 
       if (event.type === "message.part.updated") {
         const part = event.properties?.part
-        if (part?.type === "text" && part.text && !part.synthetic && assistantMessages.has(part.messageID)) {
-          lastMessage = part.text
+        const s = part?.sessionID && sessions.get(part.sessionID)
+        if (s && part.type === "text" && part.text && !part.synthetic && s.assistantMessages.has(part.messageID)) {
+          s.lastMessage = part.text
         }
         if (part?.type === "tool" && part.tool === "question" && part.state?.status === "running") {
           const questions = part.state?.input?.questions || []
           const q = questions[0]?.question || "Input needed"
-          await send("❓ Input Needed", q)
+          await send(part.sessionID, "❓ Input Needed", q)
         }
       }
 
       // Permission requests arrive as an event; the old "permission.ask" hook is gone in opencode 1.19+.
+      // Subagent permissions are sent too: they block the run until answered.
       if (event.type === "permission.asked") {
         const p = event.properties || {}
         const patterns: string[] = p.patterns || []
         let body = p.permission || "permission"
         if (patterns.length) body += `: ${patterns.join(", ")}`
-        await send("🔐 Wait for Permission", truncate(body, MAX_BODY_LENGTH))
+        await send(p.sessionID, "🔐 Wait for Permission", truncate(body, MAX_BODY_LENGTH))
       }
 
       if (event.type === "session.idle") {
         const sid = event.properties?.sessionID
-        if (sid) {
-          try {
-            const sessions = await client.session.list({ limit: 50 } as any)
-            const s = (sessions as any).data?.find((s: any) => s.id === sid)
-            if (s?.title) currentTitle = `OpenCode · ${s.title}`
-          } catch {}
-        }
+        const lastMessage = (sid && sessions.get(sid)?.lastMessage) || ""
+        if (sid) sessions.delete(sid)
+
+        // A subagent finishing is not the end of the task; its parent goes idle later.
+        const info = await sessionInfo(sid)
+        if (info.parentID) return
 
         const body = lastMessage ? truncate(lastMessage, MAX_BODY_LENGTH) : "Task completed"
-        lastMessage = ""
-        await send("✅ Responded", body)
+        await send(sid, "✅ Responded", body, info)
+      }
+
+      if (event.type === "session.deleted") {
+        const sid = event.properties?.info?.id
+        if (sid) sessions.delete(sid)
       }
     },
   }

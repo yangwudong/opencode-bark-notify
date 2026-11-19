@@ -4,15 +4,25 @@ import BarkNotifyPlugin from "../index.ts"
 const ctx: any = {
   project: { id: "global" },
   directory: "/Users/me/work/my-repo",
-  client: { session: { list: async () => ({ data: [{ id: "s1", title: "My Session" }] }) } },
+  client: {
+    session: {
+      get: async ({ path: { id } }: any) =>
+        ({
+          s1: { data: { id: "s1", title: "My Session" } },
+          s2: { data: { id: "s2", title: "Other Session" } },
+          child: { data: { id: "child", title: "Subagent", parentID: "s1" } },
+        })[id as string] ?? { data: undefined },
+    },
+  },
 }
 
-const assistant = (id: string) => ({ type: "message.updated", properties: { info: { id, role: "assistant" } } })
-const user = (id: string) => ({ type: "message.updated", properties: { info: { id, role: "user" } } })
-const text = (messageID: string, t: string) => ({
+const assistant = (id: string, sessionID = "s1") => ({ type: "message.updated", properties: { info: { id, sessionID, role: "assistant" } } })
+const user = (id: string, sessionID = "s1") => ({ type: "message.updated", properties: { info: { id, sessionID, role: "user" } } })
+const text = (messageID: string, t: string, sessionID = "s1") => ({
   type: "message.part.updated",
-  properties: { part: { type: "text", messageID, text: t } },
+  properties: { part: { type: "text", sessionID, messageID, text: t } },
 })
+const idle = (sessionID?: string) => ({ type: "session.idle", properties: sessionID ? { sessionID } : {} })
 
 describe("opencode-bark-notify", () => {
   let fetchMock: ReturnType<typeof vi.fn>
@@ -41,7 +51,7 @@ describe("opencode-bark-notify", () => {
     const hooks: any = await BarkNotifyPlugin(ctx, { barkKey: "KEY" } as any)
     await hooks.event({ event: assistant("m1") })
     await hooks.event({ event: text("m1", "All done\nline 2") })
-    await hooks.event({ event: { type: "session.idle", properties: { sessionID: "s1" } } })
+    await hooks.event({ event: idle("s1") })
     expect(sent()).toEqual([
       {
         url: "https://api.day.app/KEY",
@@ -58,7 +68,7 @@ describe("opencode-bark-notify", () => {
     await hooks.event({ event: text("a1", "Tests pass.") })
     await hooks.event({ event: user("u2") })
     await hooks.event({ event: text("u2", "thanks") })
-    await hooks.event({ event: { type: "session.idle", properties: {} } })
+    await hooks.event({ event: idle("s1") })
     expect(sent()[0].body.body).toBe("Tests pass.")
   })
 
@@ -66,8 +76,8 @@ describe("opencode-bark-notify", () => {
     const hooks: any = await BarkNotifyPlugin(ctx, { barkKey: "KEY" } as any)
     await hooks.event({ event: assistant("a1") })
     await hooks.event({ event: text("a1", "first") })
-    await hooks.event({ event: { type: "session.idle", properties: {} } })
-    await hooks.event({ event: { type: "session.idle", properties: {} } })
+    await hooks.event({ event: idle("s1") })
+    await hooks.event({ event: idle("s1") })
     expect(sent().map((s) => s.body.body)).toEqual(["first", "Task completed"])
   })
 
@@ -96,7 +106,7 @@ describe("opencode-bark-notify", () => {
 
   it("honours barkUrl, level and group", async () => {
     const hooks: any = await BarkNotifyPlugin(ctx, { barkKey: "KEY", barkUrl: "https://bark.example", level: "active", group: "g" } as any)
-    await hooks.event({ event: { type: "session.idle", properties: {} } })
+    await hooks.event({ event: idle() })
     expect(sent()[0]).toMatchObject({ url: "https://bark.example/KEY", body: { level: "active", group: "g", body: "Task completed" } })
   })
 
@@ -115,36 +125,74 @@ describe("opencode-bark-notify", () => {
     ["45", 2700],
   ])("sends expireAfter %s as ttl %i seconds", async (expireAfter, ttl) => {
     const hooks: any = await BarkNotifyPlugin(ctx, { barkKey: "KEY", expireAfter } as any)
-    await hooks.event({ event: { type: "session.idle", properties: {} } })
+    await hooks.event({ event: idle() })
     expect(sent()[0].body.ttl).toBe(ttl)
   })
 
   it.each([undefined, "permanent", 0, "0"])("keeps notifications permanently for expireAfter %s", async (expireAfter) => {
     const hooks: any = await BarkNotifyPlugin(ctx, { barkKey: "KEY", expireAfter } as any)
-    await hooks.event({ event: { type: "session.idle", properties: {} } })
+    await hooks.event({ event: idle() })
     expect(sent()[0].body).not.toHaveProperty("ttl")
   })
 
   it("warns and keeps permanently on an invalid expireAfter", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
     const hooks: any = await BarkNotifyPlugin(ctx, { barkKey: "KEY", expireAfter: "soon" } as any)
-    await hooks.event({ event: { type: "session.idle", properties: {} } })
+    await hooks.event({ event: idle() })
     expect(sent()[0].body).not.toHaveProperty("ttl")
     expect(warn).toHaveBeenCalled()
     warn.mockRestore()
   })
 
+  it("does not send ✅ when a subagent session goes idle", async () => {
+    const hooks: any = await BarkNotifyPlugin(ctx, { barkKey: "KEY" } as any)
+    await hooks.event({ event: assistant("c1", "child") })
+    await hooks.event({ event: text("c1", "subagent result", "child") })
+    await hooks.event({ event: idle("child") })
+    expect(sent()).toEqual([])
+    await hooks.event({ event: assistant("a1") })
+    await hooks.event({ event: text("a1", "parent done") })
+    await hooks.event({ event: idle("s1") })
+    expect(sent().map((s) => s.body.body)).toEqual(["parent done"])
+  })
+
+  it("keeps last messages and titles separate per session", async () => {
+    const hooks: any = await BarkNotifyPlugin(ctx, { barkKey: "KEY" } as any)
+    await hooks.event({ event: assistant("a1", "s1") })
+    await hooks.event({ event: assistant("b1", "s2") })
+    await hooks.event({ event: text("a1", "from s1", "s1") })
+    await hooks.event({ event: text("b1", "from s2", "s2") })
+    await hooks.event({ event: idle("s1") })
+    await hooks.event({ event: idle("s2") })
+    expect(sent().map((s) => [s.body.title, s.body.body])).toEqual([
+      ["OpenCode · My Session", "from s1"],
+      ["OpenCode · Other Session", "from s2"],
+    ])
+  })
+
+  it("titles permission notifications with their own session", async () => {
+    const hooks: any = await BarkNotifyPlugin(ctx, { barkKey: "KEY" } as any)
+    await hooks.event({ event: { type: "permission.asked", properties: { sessionID: "s2", permission: "bash", patterns: [] } } })
+    expect(sent()[0].body.title).toBe("OpenCode · Other Session")
+  })
+
+  it("passes a timeout signal so a hung Bark server cannot block", async () => {
+    const hooks: any = await BarkNotifyPlugin(ctx, { barkKey: "KEY" } as any)
+    await hooks.event({ event: idle() })
+    expect(fetchMock.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal)
+  })
+
   it("never throws when the network fails", async () => {
     fetchMock.mockRejectedValueOnce(new Error("offline"))
     const hooks: any = await BarkNotifyPlugin(ctx, { barkKey: "KEY" } as any)
-    await expect(hooks.event({ event: { type: "session.idle", properties: {} } })).resolves.toBeUndefined()
+    await expect(hooks.event({ event: idle() })).resolves.toBeUndefined()
   })
 
   it("truncates long bodies to 500 chars", async () => {
     const hooks: any = await BarkNotifyPlugin(ctx, { barkKey: "KEY" } as any)
     await hooks.event({ event: assistant("a1") })
     await hooks.event({ event: text("a1", "a".repeat(600)) })
-    await hooks.event({ event: { type: "session.idle", properties: {} } })
+    await hooks.event({ event: idle("s1") })
     expect(sent()[0].body.body).toBe("a".repeat(500) + "...")
   })
 
