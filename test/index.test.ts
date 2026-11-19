@@ -100,6 +100,40 @@ describe("opencode-bark-notify", () => {
     expect(sent()[0]).toMatchObject({ url: "https://bark.example/KEY", body: { level: "active", group: "g", body: "Task completed" } })
   })
 
+  it.each([
+    ["5m", 300],
+    ["10m", 600],
+    ["30m", 1800],
+    ["1h", 3600],
+    ["3h", 10800],
+    ["6h", 21600],
+    ["24h", 86400],
+    ["1.5h", 5400],
+    ["2d", 172800],
+    ["90s", 90],
+    [45, 2700],
+    ["45", 2700],
+  ])("sends expireAfter %s as ttl %i seconds", async (expireAfter, ttl) => {
+    const hooks: any = await BarkNotifyPlugin(ctx, { barkKey: "KEY", expireAfter } as any)
+    await hooks.event({ event: { type: "session.idle", properties: {} } })
+    expect(sent()[0].body.ttl).toBe(ttl)
+  })
+
+  it.each([undefined, "permanent", 0, "0"])("keeps notifications permanently for expireAfter %s", async (expireAfter) => {
+    const hooks: any = await BarkNotifyPlugin(ctx, { barkKey: "KEY", expireAfter } as any)
+    await hooks.event({ event: { type: "session.idle", properties: {} } })
+    expect(sent()[0].body).not.toHaveProperty("ttl")
+  })
+
+  it("warns and keeps permanently on an invalid expireAfter", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const hooks: any = await BarkNotifyPlugin(ctx, { barkKey: "KEY", expireAfter: "soon" } as any)
+    await hooks.event({ event: { type: "session.idle", properties: {} } })
+    expect(sent()[0].body).not.toHaveProperty("ttl")
+    expect(warn).toHaveBeenCalled()
+    warn.mockRestore()
+  })
+
   it("never throws when the network fails", async () => {
     fetchMock.mockRejectedValueOnce(new Error("offline"))
     const hooks: any = await BarkNotifyPlugin(ctx, { barkKey: "KEY" } as any)

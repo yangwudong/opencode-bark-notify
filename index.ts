@@ -5,10 +5,26 @@ interface BarkConfig {
   barkUrl?: string
   level?: string
   group?: string
+  expireAfter?: string | number
 }
 
 const DEFAULT_BARK_URL = "https://api.day.app"
 const MAX_BODY_LENGTH = 500
+const UNIT_SECONDS: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400 }
+
+// "30m" / "1h" / "24h" / "2d" / 45 (bare number = minutes) → seconds for Bark's `ttl`.
+// "permanent", empty or unset → undefined (never auto-deleted). Invalid → undefined + warn.
+const parseExpireAfter = (value: string | number | undefined): number | undefined => {
+  if (value === undefined || value === null || value === "") return undefined
+  const str = String(value).trim().toLowerCase()
+  if (["permanent", "forever", "never", "0"].includes(str)) return undefined
+  const match = str.match(/^(\d+(?:\.\d+)?)\s*([smhd]?)$/)
+  if (!match) {
+    console.warn(`[opencode-bark-notify] Invalid expireAfter "${value}"; notifications will be kept permanently.`)
+    return undefined
+  }
+  return Math.round(Number(match[1]) * UNIT_SECONDS[match[2] || "m"])
+}
 
 const sendBark = async (
   barkUrl: string,
@@ -18,12 +34,13 @@ const sendBark = async (
   body: string,
   level: string,
   group: string,
+  ttl: number | undefined,
 ) => {
   try {
     await fetch(`${barkUrl}/${barkKey}`, {
       method: "POST",
       headers: { "Content-Type": "application/json; charset=utf-8" },
-      body: JSON.stringify({ title, subtitle, body, group, level }),
+      body: JSON.stringify({ title, subtitle, body, group, level, ...(ttl ? { ttl } : {}) }),
     })
   } catch {}
 }
@@ -50,6 +67,7 @@ export const BarkNotifyPlugin: Plugin = async ({ project, client, directory }, c
   const barkUrl = config.barkUrl || process.env.BARK_URL || DEFAULT_BARK_URL
   const level = config.level || "timeSensitive"
   const group = config.group || "opencode"
+  const ttl = parseExpireAfter(config.expireAfter)
 
   // project.id is "global" outside a git repository; the folder name says more.
   const folder = String(directory || (project as any)?.worktree || "").split("/").filter(Boolean).pop()
@@ -60,7 +78,7 @@ export const BarkNotifyPlugin: Plugin = async ({ project, client, directory }, c
   let lastMessage = ""
 
   const send = (subtitle: string, body: string) =>
-    sendBark(barkUrl, barkKey, currentTitle, subtitle, body, level, group)
+    sendBark(barkUrl, barkKey, currentTitle, subtitle, body, level, group, ttl)
 
   return {
     event: async ({ event }: { event: any }) => {

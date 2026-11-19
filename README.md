@@ -58,6 +58,9 @@ Restart OpenCode.
 | `barkUrl` | string | `https://api.day.app` | Bark server URL (for self-hosted) |
 | `level` | string | `timeSensitive` | iOS notification level |
 | `group` | string | `opencode` | iOS notification group |
+| `expireAfter` | string \| number | *(permanent)* | Auto-delete notifications after this long, e.g. `"5m"`, `"30m"`, `"1h"`, `"24h"`, `"2d"`, `"90s"`. A bare number means minutes. `"permanent"` / `0` / unset = never delete |
+
+> `expireAfter` maps to Bark's [`ttl`](https://github.com/Finb/Bark/blob/master/docs/en-us/params.md#ttl) parameter: when it expires, Bark deletes the history entry and removes the notification from Notification Center. It only applies to pushes saved to Bark's history (on by default).
 
 ### Example with all options
 
@@ -68,7 +71,8 @@ Restart OpenCode.
       "barkKey": "YOUR_KEY",
       "barkUrl": "https://your-bark-server.com",
       "level": "active",
-      "group": "my-agent"
+      "group": "my-agent",
+      "expireAfter": "1h"
     }]
   ]
 }

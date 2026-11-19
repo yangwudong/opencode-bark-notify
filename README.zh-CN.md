@@ -58,6 +58,9 @@ export BARK_KEY="你的BARK设备KEY"
 | `barkUrl` | string | `https://api.day.app` | Bark 服务器地址（自建服务器用） |
 | `level` | string | `timeSensitive` | iOS 通知级别 |
 | `group` | string | `opencode` | iOS 通知分组 |
+| `expireAfter` | string \| number | *(永久)* | 通知多久后自动删除，如 `"5m"`、`"30m"`、`"1h"`、`"24h"`、`"2d"`、`"90s"`。纯数字表示分钟。`"permanent"` / `0` / 不配置 = 永不删除 |
+
+> `expireAfter` 对应 Bark 的 [`ttl`](https://github.com/Finb/Bark/blob/master/docs/params.md#ttl) 参数：到期后 Bark 会删除历史记录，并从通知中心移除该通知。仅对保存到 Bark 历史的推送生效（默认保存）。
 
 ## 通知类型
 
