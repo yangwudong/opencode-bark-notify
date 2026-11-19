@@ -55,7 +55,14 @@ describe("opencode-bark-notify", () => {
     expect(sent()).toEqual([
       {
         url: "https://api.day.app/KEY",
-        body: { title: "OpenCode · My Session", subtitle: "✅ Responded", body: "All done line 2", group: "opencode", level: "timeSensitive" },
+        body: {
+          title: "OpenCode · My Session",
+          subtitle: "✅ Responded",
+          body: "All done line 2",
+          markdown: "All done\nline 2",
+          group: "opencode",
+          level: "timeSensitive",
+        },
       },
     ])
   })
@@ -93,15 +100,97 @@ describe("opencode-bark-notify", () => {
     expect(sent()[0].body).toMatchObject({ subtitle: "🔐 Wait for Permission", body: "bash: echo hello" })
   })
 
-  it("sends when the question tool starts", async () => {
+  it("sends on question.asked events", async () => {
     const hooks: any = await BarkNotifyPlugin(ctx, { barkKey: "KEY" } as any)
     await hooks.event({
-      event: {
-        type: "message.part.updated",
-        properties: { part: { type: "tool", tool: "question", state: { status: "running", input: { questions: [{ question: "Tabs or spaces?" }] } } } },
-      },
+      event: { type: "question.asked", properties: { id: "que_1", sessionID: "s1", questions: [{ question: "Tabs or spaces?" }] } },
     })
-    expect(sent()[0].body).toMatchObject({ subtitle: "❓ Input Needed", body: "Tabs or spaces?" })
+    expect(sent()[0].body).toMatchObject({ subtitle: "❓ Input Needed", body: "Tabs or spaces?", id: "que_1" })
+  })
+
+  it.each(["permission.replied", "question.replied", "question.rejected"])(
+    "deletes the request notification from the phone on %s",
+    async (type) => {
+      const hooks: any = await BarkNotifyPlugin(ctx, { barkKey: "KEY" } as any)
+      const asked = type.startsWith("permission")
+        ? { type: "permission.asked", properties: { id: "req_1", sessionID: "s1", permission: "bash", patterns: [] } }
+        : { type: "question.asked", properties: { id: "req_1", sessionID: "s1", questions: [{ question: "?" }] } }
+      await hooks.event({ event: asked })
+      await hooks.event({ event: { type, properties: { sessionID: "s1", requestID: "req_1" } } })
+      // A second reply for the same id (or one never sent) must not push again.
+      await hooks.event({ event: { type, properties: { sessionID: "s1", requestID: "req_1" } } })
+      await hooks.event({ event: { type, properties: { sessionID: "s1", requestID: "unknown" } } })
+      expect(sent().map((s) => s.body)).toEqual([expect.objectContaining({ id: "req_1" }), { id: "req_1", delete: "1" }])
+    },
+  )
+
+  it("does not set ids or delete when autoDismiss is false", async () => {
+    const hooks: any = await BarkNotifyPlugin(ctx, { barkKey: "KEY", autoDismiss: false } as any)
+    await hooks.event({ event: { type: "permission.asked", properties: { id: "req_1", sessionID: "s1", permission: "bash", patterns: [] } } })
+    await hooks.event({ event: { type: "permission.replied", properties: { sessionID: "s1", requestID: "req_1" } } })
+    expect(sent()).toHaveLength(1)
+    expect(sent()[0].body).not.toHaveProperty("id")
+  })
+
+  it("sends ❌ instead of ✅ when the session ends with an error", async () => {
+    const hooks: any = await BarkNotifyPlugin(ctx, { barkKey: "KEY" } as any)
+    await hooks.event({ event: assistant("a1") })
+    await hooks.event({ event: text("a1", "partial answer") })
+    await hooks.event({
+      event: { type: "session.error", properties: { sessionID: "s1", error: { name: "APIError", data: { message: "rate limited" } } } },
+    })
+    await hooks.event({ event: idle("s1") })
+    expect(sent().map((s) => s.body)).toEqual([expect.objectContaining({ title: "OpenCode · My Session", subtitle: "❌ Error", body: "rate limited" })])
+  })
+
+  it("sends ✅ when the session recovers from an error with a later reply", async () => {
+    const hooks: any = await BarkNotifyPlugin(ctx, { barkKey: "KEY" } as any)
+    await hooks.event({ event: { type: "session.error", properties: { sessionID: "s1", error: { name: "UnknownError", data: { message: "file missing" } } } } })
+    await hooks.event({ event: assistant("a1") })
+    await hooks.event({ event: text("a1", "worked around it") })
+    await hooks.event({ event: idle("s1") })
+    expect(sent()[0].body).toMatchObject({ subtitle: "✅ Responded", body: "worked around it" })
+  })
+
+  it("does not report a user cancel as an error", async () => {
+    const hooks: any = await BarkNotifyPlugin(ctx, { barkKey: "KEY" } as any)
+    await hooks.event({ event: { type: "session.error", properties: { sessionID: "s1", error: { name: "MessageAbortedError", data: { message: "Aborted" } } } } })
+    await hooks.event({ event: idle("s1") })
+    expect(sent()[0].body.subtitle).toBe("✅ Responded")
+  })
+
+  it("sends a session-less error right away", async () => {
+    const hooks: any = await BarkNotifyPlugin(ctx, { barkKey: "KEY" } as any)
+    await hooks.event({ event: { type: "session.error", properties: { error: { name: "ProviderAuthError", data: { message: "bad key" } } } } })
+    expect(sent()[0].body).toMatchObject({ title: "OpenCode · my-repo", subtitle: "❌ Error", body: "bad key" })
+  })
+
+  it("does not send a subagent's error; the parent reports the outcome", async () => {
+    const hooks: any = await BarkNotifyPlugin(ctx, { barkKey: "KEY" } as any)
+    await hooks.event({ event: { type: "session.error", properties: { sessionID: "child", error: { name: "APIError", data: { message: "x" } } } } })
+    await hooks.event({ event: idle("child") })
+    expect(sent()).toEqual([])
+  })
+
+  it("omits markdown when markdown is false or there is no reply", async () => {
+    const hooks: any = await BarkNotifyPlugin(ctx, { barkKey: "KEY", markdown: false } as any)
+    await hooks.event({ event: assistant("a1") })
+    await hooks.event({ event: text("a1", "# Title\n- item") })
+    await hooks.event({ event: idle("s1") })
+    await hooks.event({ event: idle("s1") })
+    expect(sent()[0].body).not.toHaveProperty("markdown")
+    expect(sent()[1].body).not.toHaveProperty("markdown")
+  })
+
+  it("truncates markdown without flattening newlines", async () => {
+    const hooks: any = await BarkNotifyPlugin(ctx, { barkKey: "KEY" } as any)
+    await hooks.event({ event: assistant("a1") })
+    await hooks.event({ event: text("a1", "- a\n".repeat(200)) })
+    await hooks.event({ event: idle("s1") })
+    const { markdown, body } = sent()[0].body
+    expect(markdown.startsWith("- a\n- a")).toBe(true)
+    expect(markdown.length).toBe(503)
+    expect(body.length).toBe(153)
   })
 
   it("honours barkUrl, level and group", async () => {
@@ -189,7 +278,7 @@ describe("opencode-bark-notify", () => {
   })
 
   it("truncates long bodies to 500 chars", async () => {
-    const hooks: any = await BarkNotifyPlugin(ctx, { barkKey: "KEY" } as any)
+    const hooks: any = await BarkNotifyPlugin(ctx, { barkKey: "KEY", markdown: false } as any)
     await hooks.event({ event: assistant("a1") })
     await hooks.event({ event: text("a1", "a".repeat(600)) })
     await hooks.event({ event: idle("s1") })

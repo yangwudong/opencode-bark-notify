@@ -6,10 +6,15 @@ interface BarkConfig {
   level?: string
   group?: string
   expireAfter?: string | number
+  markdown?: boolean
+  autoDismiss?: boolean
 }
 
 const DEFAULT_BARK_URL = "https://api.day.app"
 const MAX_BODY_LENGTH = 500
+// With `markdown` set, `body` is only the fallback for Bark versions without Markdown; keep it
+// short so both fit APNs' 4 KB payload limit (CJK text is 3 bytes per character).
+const MAX_FALLBACK_LENGTH = 150
 const REQUEST_TIMEOUT_MS = 5000
 const UNIT_SECONDS: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400 }
 
@@ -27,31 +32,26 @@ const parseExpireAfter = (value: string | number | undefined): number | undefine
   return Math.round(Number(match[1]) * UNIT_SECONDS[match[2] || "m"])
 }
 
-const sendBark = async (
-  barkUrl: string,
-  barkKey: string,
-  title: string,
-  subtitle: string,
-  body: string,
-  level: string,
-  group: string,
-  ttl: number | undefined,
-) => {
+const sendBark = async (barkUrl: string, barkKey: string, payload: Record<string, unknown>) => {
   try {
     await fetch(`${barkUrl}/${barkKey}`, {
       method: "POST",
       headers: { "Content-Type": "application/json; charset=utf-8" },
-      body: JSON.stringify({ title, subtitle, body, group, level, ...(ttl ? { ttl } : {}) }),
+      body: JSON.stringify(payload),
       // A hung Bark server must not stall opencode's event handling.
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     })
   } catch {}
 }
 
-const truncate = (text: string, max: number): string => {
-  const clean = text.replace(/\n+/g, " ").trim()
+const clip = (text: string, max: number): string => {
+  const clean = text.trim()
   return clean.length > max ? clean.slice(0, max) + "..." : clean
 }
+
+const truncate = (text: string, max: number): string => clip(text.replace(/\n+/g, " "), max)
+
+const errorText = (error: any): string => error?.data?.message || error?.name || "Unknown error"
 
 // Every notification is sent, whether or not the terminal is in front. Focus detection
 // (osascript) proved fragile across macOS releases and silently dropped notifications.
@@ -71,6 +71,8 @@ export const BarkNotifyPlugin: Plugin = async ({ project, client, directory }, c
   const level = config.level || "timeSensitive"
   const group = config.group || "opencode"
   const ttl = parseExpireAfter(config.expireAfter)
+  const markdown = config.markdown !== false
+  const autoDismiss = config.autoDismiss !== false
 
   // project.id is "global" outside a git repository; the folder name says more.
   const folder = String(directory || (project as any)?.worktree || "").split("/").filter(Boolean).pop()
@@ -78,12 +80,17 @@ export const BarkNotifyPlugin: Plugin = async ({ project, client, directory }, c
 
   // State is per session: several sessions (or a session and its subagents) can run at once.
   // Only assistant text is worth sending; user prompts arrive as text parts too.
-  const sessions = new Map<string, { assistantMessages: Set<string>; lastMessage: string }>()
+  // `error` is set by session.error and cleared by any later reply text, so an error the
+  // session recovers from (compaction, a file that failed to attach) does not turn ✅ into ❌.
+  const sessions = new Map<string, { assistantMessages: Set<string>; lastMessage: string; error?: string }>()
   const state = (sid: string) => {
     let s = sessions.get(sid)
     if (!s) sessions.set(sid, (s = { assistantMessages: new Set(), lastMessage: "" }))
     return s
   }
+
+  // Bark ids of 🔐 / ❓ notifications still on the phone, so they can be deleted once answered.
+  const pending = new Set<string>()
 
   const sessionInfo = async (sid: string | undefined): Promise<{ title?: string; parentID?: string }> => {
     if (!sid) return {}
@@ -95,9 +102,35 @@ export const BarkNotifyPlugin: Plugin = async ({ project, client, directory }, c
     }
   }
 
-  const send = async (sid: string | undefined, subtitle: string, body: string, info?: { title?: string }) => {
+  const send = async (
+    sid: string | undefined,
+    subtitle: string,
+    body: string,
+    extra: Record<string, unknown> = {},
+    info?: { title?: string },
+  ) => {
     const { title } = info || (await sessionInfo(sid))
-    await sendBark(barkUrl, barkKey, title ? `OpenCode · ${title}` : fallbackTitle, subtitle, body, level, group, ttl)
+    await sendBark(barkUrl, barkKey, {
+      title: title ? `OpenCode · ${title}` : fallbackTitle,
+      subtitle,
+      body,
+      group,
+      level,
+      ...(ttl ? { ttl } : {}),
+      ...extra,
+    })
+  }
+
+  // A request notification carries the request id as its Bark id; answering it on the
+  // computer sends a silent delete push. Bark needs Background App Refresh for this.
+  const sendRequest = async (sid: string | undefined, requestID: string | undefined, subtitle: string, body: string) => {
+    if (autoDismiss && requestID) pending.add(requestID)
+    await send(sid, subtitle, body, autoDismiss && requestID ? { id: requestID } : {})
+  }
+
+  const dismiss = async (requestID: string | undefined) => {
+    if (!requestID || !pending.delete(requestID)) return
+    await sendBark(barkUrl, barkKey, { id: requestID, delete: "1" })
   }
 
   return {
@@ -112,12 +145,13 @@ export const BarkNotifyPlugin: Plugin = async ({ project, client, directory }, c
         const s = part?.sessionID && sessions.get(part.sessionID)
         if (s && part.type === "text" && part.text && !part.synthetic && s.assistantMessages.has(part.messageID)) {
           s.lastMessage = part.text
+          s.error = undefined
         }
-        if (part?.type === "tool" && part.tool === "question" && part.state?.status === "running") {
-          const questions = part.state?.input?.questions || []
-          const q = questions[0]?.question || "Input needed"
-          await send(part.sessionID, "❓ Input Needed", q)
-        }
+      }
+
+      if (event.type === "question.asked") {
+        const q = event.properties || {}
+        await sendRequest(q.sessionID, q.id, "❓ Input Needed", truncate(q.questions?.[0]?.question || "Input needed", MAX_BODY_LENGTH))
       }
 
       // Permission requests arrive as an event; the old "permission.ask" hook is gone in opencode 1.19+.
@@ -127,20 +161,42 @@ export const BarkNotifyPlugin: Plugin = async ({ project, client, directory }, c
         const patterns: string[] = p.patterns || []
         let body = p.permission || "permission"
         if (patterns.length) body += `: ${patterns.join(", ")}`
-        await send(p.sessionID, "🔐 Wait for Permission", truncate(body, MAX_BODY_LENGTH))
+        await sendRequest(p.sessionID, p.id, "🔐 Wait for Permission", truncate(body, MAX_BODY_LENGTH))
+      }
+
+      if (event.type === "permission.replied" || event.type === "question.replied" || event.type === "question.rejected") {
+        await dismiss(event.properties?.requestID)
+      }
+
+      // Cancelling is the user's own doing, not an error worth a push.
+      if (event.type === "session.error") {
+        const { sessionID: sid, error } = event.properties || {}
+        if (error?.name !== "MessageAbortedError") {
+          if (sid) state(sid).error = errorText(error)
+          else await send(undefined, "❌ Error", truncate(errorText(error), MAX_BODY_LENGTH))
+        }
       }
 
       if (event.type === "session.idle") {
         const sid = event.properties?.sessionID
-        const lastMessage = (sid && sessions.get(sid)?.lastMessage) || ""
+        const { lastMessage = "", error } = (sid && sessions.get(sid)) || {}
         if (sid) sessions.delete(sid)
 
         // A subagent finishing is not the end of the task; its parent goes idle later.
         const info = await sessionInfo(sid)
         if (info.parentID) return
 
-        const body = lastMessage ? truncate(lastMessage, MAX_BODY_LENGTH) : "Task completed"
-        await send(sid, "✅ Responded", body, info)
+        if (error) {
+          await send(sid, "❌ Error", truncate(error, MAX_BODY_LENGTH), {}, info)
+          return
+        }
+        if (markdown && lastMessage) {
+          // `markdown` overrides `body` in Bark apps that support it.
+          const md = { markdown: clip(lastMessage, MAX_BODY_LENGTH) }
+          await send(sid, "✅ Responded", truncate(lastMessage, MAX_FALLBACK_LENGTH), md, info)
+        } else {
+          await send(sid, "✅ Responded", lastMessage ? truncate(lastMessage, MAX_BODY_LENGTH) : "Task completed", {}, info)
+        }
       }
 
       if (event.type === "session.deleted") {
